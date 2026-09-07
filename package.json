@@ -4,7 +4,7 @@
   "version": "0.1.1",
   "unity": "2022.3",
   "license": "MIT",
-  "description": "A pure C# CIL interpreter designed to load and execute managed code on IL2CPP (Unity) platforms.\n Updated by Teledyne to support more C# code patterns",
+  "description": "A pure C# CIL interpreter designed to load and execute managed code on IL2CPP (Unity) platforms.\n Updated by Teledyne FLIR UAS to support more C# code patterns",
   "keywords": [
     "IL2CPP",
     "CLR",
@@ -13,7 +13,7 @@
     "Runtime"
   ],
   "author": {
-    "name": "scottyboy805/TeledyneUAS",
+    "name": "Teledyne FLIR UAS/scottyboy805",
     "email": "simulation-uas@teledyne.com",
     "url": "https://github.com/TeledyneFlirUas/dotnow-interpreter"
   },
