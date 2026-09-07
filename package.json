@@ -1,10 +1,10 @@
 {
-  "name": "com.scottyboy805.dotnow",
-  "displayName": "dotnow interpreter",
+  "name": "com.teledyne.dotnow",
+  "displayName": "Teledyne Dotnow Interpreter",
   "version": "0.1.1",
   "unity": "2022.3",
   "license": "MIT",
-  "description": "A pure C# CIL interpreter designed to load and execute managed code on IL2CPP (Unity) platforms.",
+  "description": "A pure C# CIL interpreter designed to load and execute managed code on IL2CPP (Unity) platforms.\n Updated by Teledyne to support more C# code patterns",
   "keywords": [
     "IL2CPP",
     "CLR",
@@ -13,9 +13,9 @@
     "Runtime"
   ],
   "author": {
-    "name": "scottyboy805",
-    "email": "scottyboy805@hotmail.co.uk",
-    "url": "https://github.com/scottyboy805"
+    "name": "scottyboy805/TeledyneUAS",
+    "email": "simulation-uas@teledyne.com",
+    "url": "https://github.com/TeledyneFlirUas/dotnow-interpreter"
   },
   "dependencies": {}
 }
