@@ -1,4 +1,4 @@
-using dotnow.Reflection;
+﻿using dotnow.Reflection;
 using System;
 
 namespace dotnow.Runtime.CIL
@@ -82,9 +82,8 @@ namespace dotnow.Runtime.CIL
             // Check for CLR
             if((Flags & CILTypeFlags.Interpreted) != 0)
             {
-                // Create VTable
-                if (type.IsSealed == false)
-                    this.VTable = new CILVTable(type);
+                // Create VTable - sealed types can still override virtual members of their base, so they need one as well
+                this.VTable = new CILVTable(type);
 
                 // Get the base type
                 this.InteropBaseType = GetInteropBaseType(type);

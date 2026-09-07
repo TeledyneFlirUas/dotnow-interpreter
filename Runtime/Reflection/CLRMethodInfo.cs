@@ -138,12 +138,14 @@ namespace dotnow.Reflection
 
         public override Delegate CreateDelegate(Type delegateType)
         {
-            return __delegate.CreateDelegate(delegateType, this);
+            // Static method - build a delegate that forwards into the interpreter
+            return __delegate.CreateDelegate(delegateType, null, this.GetMethodInfo(AssemblyLoadContext.AppDomain));
         }
 
         public override Delegate CreateDelegate(Type delegateType, object target)
         {
-            return Delegate.CreateDelegate(delegateType, target, this);
+            // Instance method - the runtime cannot bind a delegate to a non-runtime MethodInfo, so build a forwarding delegate
+            return __delegate.CreateDelegate(delegateType, target, this.GetMethodInfo(AssemblyLoadContext.AppDomain));
         }
         #endregion
 

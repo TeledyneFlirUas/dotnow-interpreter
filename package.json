@@ -1,7 +1,7 @@
 {
   "name": "com.scottyboy805.dotnow",
   "displayName": "dotnow interpreter",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "unity": "2022.3",
   "license": "MIT",
   "description": "A pure C# CIL interpreter designed to load and execute managed code on IL2CPP (Unity) platforms.",

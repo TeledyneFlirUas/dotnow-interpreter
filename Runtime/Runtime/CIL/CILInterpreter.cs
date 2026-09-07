@@ -3809,6 +3809,26 @@ namespace dotnow.Runtime.CIL
                             // Get the stack index where the method arguments were loaded
                             int spArgCaller = sp - ctorMethod.ParameterTypes.Length;
 
+                            // Delegate construction: newobj SomeDelegate::.ctor(object, native int) where the function pointer was pushed by ldftn/ldvirtftn.
+                            // The interpreter represents the function pointer as the resolved CILMethodInfo, so build a real delegate here instead of calling the ctor.
+                            if (ctorMethod.ParameterTypes.Length == 2 && stack[sp - 1].Ref is CILMethodInfo functionPointer && __delegate.IsDelegateType(ctorMethod.DeclaringType.Type) == true)
+                            {
+                                object delegateTarget = stack[sp - 2].Ref;
+
+                                // Create the delegate
+                                Delegate createdDelegate = __delegate.CreateDelegate(ctorMethod.DeclaringType.Type, delegateTarget, functionPointer);
+
+                                // Pop target and function pointer, push the delegate
+                                sp -= 2;
+                                stack[sp].Ref = createdDelegate;
+                                stack[sp].Type = StackType.Ref;
+                                sp++;
+
+                                // Debug execution
+                                Debug.Instruction(op, pc - 5, stack[sp - 1]);
+                                break;
+                            }
+
                             // Check for interop
                             bool interop = (ctorMethod.Flags & CILMethodFlags.Interop) != 0;
 
@@ -3898,7 +3918,8 @@ namespace dotnow.Runtime.CIL
                                     CILTypeInfo virtualType = instanceType.GetTypeInfo(loadContext.AppDomain);
 
                                     // Try to get the virtual method
-                                    virtualType.VTable.GetVirtualInstanceMethod(loadContext, ref callMethod);
+                                    if (virtualType.VTable != null)
+                                        virtualType.VTable.GetVirtualInstanceMethod(loadContext, ref callMethod);
                                 }
 
                                 // Execute the method
@@ -3928,6 +3949,61 @@ namespace dotnow.Runtime.CIL
 
                             // Clear constraint
                             constrainedType = null;
+                            break;
+                        }
+                    case ILOpCode.Ldftn:
+                        {
+                            // Get method token
+                            int token = FetchDecode<int>(instructions, ref pc);
+
+                            // Get handle
+                            EntityHandle fnHandle = MetadataTokens.EntityHandle(token);
+
+                            // Load the method
+                            CILMethodInfo fnMethod = loadContext.GetMethodHandle(fnHandle);
+
+                            // Push the method as the function pointer - consumed by newobj on a delegate type
+                            stack[sp].Ref = fnMethod;
+                            stack[sp].Type = StackType.Ref;
+                            sp++;
+
+                            // Debug execution
+                            Debug.Instruction(op, pc - 5, fnMethod.Method, sp - 1, 0);
+                            break;
+                        }
+                    case ILOpCode.Ldvirtftn:
+                        {
+                            // Get method token
+                            int token = FetchDecode<int>(instructions, ref pc);
+
+                            // Get handle
+                            EntityHandle fnHandle = MetadataTokens.EntityHandle(token);
+
+                            // Load the method
+                            CILMethodInfo fnMethod = loadContext.GetMethodHandle(fnHandle);
+
+                            // Pop the instance
+                            object fnInstance = stack[--sp].Ref;
+
+                            if (fnInstance == null)
+                                threadContext.Throw<NullReferenceException>();
+
+                            // Late-bind interpreted virtual methods on the instance type (interop methods are late-bound by Delegate.CreateDelegate)
+                            if ((fnMethod.Flags & CILMethodFlags.Interpreted) != 0 && (fnMethod.Flags & CILMethodFlags.This) != 0)
+                            {
+                                CILTypeInfo virtualType = fnInstance.GetInterpretedType().GetTypeInfo(loadContext.AppDomain);
+
+                                if (virtualType.VTable != null)
+                                    virtualType.VTable.GetVirtualInstanceMethod(loadContext, ref fnMethod);
+                            }
+
+                            // Push the method as the function pointer
+                            stack[sp].Ref = fnMethod;
+                            stack[sp].Type = StackType.Ref;
+                            sp++;
+
+                            // Debug execution
+                            Debug.Instruction(op, pc - 5, fnMethod.Method, sp - 1, 0);
                             break;
                         }
                     case ILOpCode.Ret:

@@ -168,8 +168,8 @@ namespace dotnow.Runtime.JIT
                             // Switch has a variable length table, so we need to read it manually
                             int length = CILInterpreter.FetchDecode<int>(instructions, ref pc);
 
-                            // Increment counter
-                            length += sizeof(int) * length;
+                            // Skip the jump table (one int32 target per case)
+                            pc += sizeof(int) * length;
 
                             // Skip the increment and continue the loop
                             continue;
@@ -221,8 +221,8 @@ namespace dotnow.Runtime.JIT
                             // Switch has a variable length table, so we need to read it manually
                             int length = CILInterpreter.FetchDecode<int>(bytecode, ref pc);
 
-                            // Increment counter
-                            length += sizeof(int) * length;
+                            // Skip the jump table (one int32 target per case)
+                            pc += sizeof(int) * length;
 
                             // Skip the increment and continue the loop
                             continue;

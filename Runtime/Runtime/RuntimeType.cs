@@ -35,9 +35,31 @@ namespace dotnow.Runtime
             }
             else
             {
+                // Runtime IsAssignableFrom returns false for any non-runtime Type (such as CLRType), so walk an interpreted
+                // source type up to its first native (interop) base class and test from there.
+                // Example: CharacterAnimatorController : AnimatorController : MonoBehaviour -> test MonoBehaviour against dst.
+                Type interopSrc = src;
+                while (interopSrc != null && interopSrc.IsCLRType() == true)
+                    interopSrc = interopSrc.BaseType;
+
                 // Check for assignable
-                if (dst.IsAssignableFrom(src) == true)
+                if (interopSrc != null && dst.IsAssignableFrom(interopSrc) == true)
                     return true;
+
+                // Interfaces implemented by an interpreted type (or by its interpreted bases)
+                if (dst.IsInterface == true && src.IsCLRType() == true)
+                {
+                    for (Type clrSrc = src; clrSrc != null && clrSrc.IsCLRType() == true; clrSrc = clrSrc.BaseType)
+                    {
+                        Type[] interfaces = clrSrc.GetInterfaces();
+
+                        for (int i = 0; i < interfaces.Length; i++)
+                        {
+                            if (interfaces[i] == dst || (interfaces[i].IsCLRType() == false && dst.IsAssignableFrom(interfaces[i]) == true))
+                                return true;
+                        }
+                    }
+                }
             }
 
             // Handle arrays
