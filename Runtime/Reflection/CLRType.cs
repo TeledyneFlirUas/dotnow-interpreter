@@ -265,18 +265,11 @@ namespace dotnow.Reflection
 
         public override FieldInfo[] GetFields(BindingFlags bindingAttr)
         {
-            foreach (FieldInfo field in fields)
+            // Declared fields followed by inherited fields (see EnumerateFields for the inheritance rules)
+            foreach (FieldInfo field in EnumerateFields(this, bindingAttr))
             {
                 // Check for matching field
                 if (MatchFieldNameAndAttributes(field, bindingAttr, null) == true)
-                    memberArrayBuilder.Add(field);
-            }
-
-            // Check base type
-            if (baseType != null && (bindingAttr & BindingFlags.FlattenHierarchy) != 0)
-            {
-                // Get all matching child fields
-                foreach (FieldInfo field in BaseType.GetFields(bindingAttr))
                     memberArrayBuilder.Add(field);
             }
 
@@ -800,21 +793,38 @@ namespace dotnow.Reflection
 
         private static IEnumerable<FieldInfo> EnumerateFields(Type type, BindingFlags bindingAttr)
         {
-            // Get declared fields
-            IEnumerable<FieldInfo> topLevelFields = (type is not CLRType clrType)
-                ? type.GetFields(bindingAttr)
-                : clrType.fields;
+            // Interop types: the runtime already applies the inheritance rules (inherited non-private instance fields
+            // are included; inherited statics only with FlattenHierarchy), so do not recurse into their base types.
+            if (type is not CLRType clrType)
+            {
+                foreach (FieldInfo field in type.GetFields(bindingAttr))
+                    yield return field;
 
-            // Enumerate top level
-            foreach (FieldInfo field in topLevelFields)
+                yield break;
+            }
+
+            // Enumerate declared fields
+            foreach (FieldInfo field in clrType.fields)
                 yield return field;
 
-            // Get base fields
-            if ((bindingAttr & BindingFlags.FlattenHierarchy) != 0 && type.BaseType != null)
+            // Inherited fields, following .NET reflection semantics:
+            // - private members are never inherited
+            // - instance members are inherited regardless of FlattenHierarchy
+            // - static members are inherited only with FlattenHierarchy
+            if (type.BaseType != null)
             {
-                // Get derived
-                foreach (FieldInfo derivedField in EnumerateFields(type.BaseType, bindingAttr))
-                    yield return derivedField;
+                bool flatten = (bindingAttr & BindingFlags.FlattenHierarchy) != 0;
+
+                foreach (FieldInfo baseField in EnumerateFields(type.BaseType, bindingAttr))
+                {
+                    if (baseField.IsPrivate == true)
+                        continue;
+
+                    if (baseField.IsStatic == true && flatten == false)
+                        continue;
+
+                    yield return baseField;
+                }
             }
         }
 

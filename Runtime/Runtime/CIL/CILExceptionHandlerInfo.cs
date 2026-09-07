@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Reflection;
 using System.Runtime.CompilerServices;
 
@@ -26,19 +26,41 @@ namespace dotnow.Runtime.CIL
         // Constructor
         public CILExceptionHandlerInfo(ExceptionHandlingClause clause)
         {
-            this.ExceptionType = clause.CatchType;
             this.HandlerKind = (ExceptionHandlerKind)clause.Flags;
             this.TryOffset = clause.TryOffset;
             this.TryLength = clause.TryLength;
             this.HandlerOffset = clause.HandlerOffset;
             this.HandlerLength = clause.HandlerLength;
+
+            // CatchType is only defined for typed catch clauses. Reading it for finally/fault/filter clauses
+            // throws on some ExceptionHandlingClause implementations (nil metadata handle).
+            this.ExceptionType = this.HandlerKind == ExceptionHandlerKind.Clause
+                ? clause.CatchType
+                : null;
         }
 
         // Methods
+        /// <summary>
+        /// True if the given instruction offset lies inside this clause's protected (try) region.
+        /// </summary>
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         public bool IsCaught(int pc)
         {
             return pc >= TryOffset && pc < TryOffset + TryLength;
+        }
+
+        /// <summary>
+        /// True if the given instruction offset lies inside this clause's handler region.
+        /// </summary>
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public bool IsInHandler(int pc)
+        {
+            return pc >= HandlerOffset && pc < HandlerOffset + HandlerLength;
+        }
+
+        public override string ToString()
+        {
+            return $"{HandlerKind} try[{TryOffset},{TryOffset + TryLength}) handler[{HandlerOffset},{HandlerOffset + HandlerLength}) {ExceptionType}";
         }
     }
 }

@@ -4,6 +4,7 @@ using System.Reflection;
 using System.Reflection.Metadata;
 using System.Reflection.Metadata.Ecma335;
 using System.Runtime.CompilerServices;
+using System.Runtime.ExceptionServices;
 using System.Runtime.InteropServices;
 
 namespace dotnow.Runtime.CIL
@@ -12,6 +13,16 @@ namespace dotnow.Runtime.CIL
     {
         // Methods
         public static int ExecuteMethodBytecode(ThreadContext threadContext, AssemblyLoadContext loadContext, CILMethodInfo method, ref int pc, int spArg)
+        {
+            return ExecuteMethodBytecode(threadContext, loadContext, method, ref pc, spArg, true);
+        }
+
+        /// <summary>
+        /// Execute the bytecode of an interpreted method starting at <paramref name="pc"/>.
+        /// </summary>
+        /// <param name="initLocals">True for a fresh method invocation. False when re-entering the same frame to run a
+        /// finally/fault handler block, in which case the local variables of the frame must be preserved.</param>
+        internal static int ExecuteMethodBytecode(ThreadContext threadContext, AssemblyLoadContext loadContext, CILMethodInfo method, ref int pc, int spArg, bool initLocals)
         {
             // Check for interpreted
             if ((method.Flags & CILMethodFlags.Interpreted) == 0)
@@ -23,11 +34,20 @@ namespace dotnow.Runtime.CIL
             // Get local
             int spLoc = spArg + ((method.Flags & CILMethodFlags.This) != 0 ? 1 : 0) + method.ParameterTypes.Length;
 
-            // Copy locals into frame
-            Array.Copy(method.Locals, 0, stack, spLoc, method.LocalCount);
+            // Copy locals into frame (not when re-entering the frame for a finally/fault handler)
+            if (initLocals == true)
+                Array.Copy(method.Locals, 0, stack, spLoc, method.LocalCount);
 
             // Get sp
             int sp = spLoc + method.LocalCount;
+
+            // Evaluation stack is empty at this pointer - handlers always start with an empty evaluation stack
+            int spEmpty = sp;
+
+            // Exception handling state
+            int frameDepth = threadContext.callStack.Count;     // Interpreted call frames owned by callers + this frame
+            int instructionStart = pc;                          // Offset of the instruction currently executing (for handler range lookup)
+            Exception activeException = null;                   // Exception being handled by the catch handler currently executing (for rethrow)
 
             // Get sp max
             int spMax = sp + method.MaxStack;
@@ -45,8 +65,16 @@ namespace dotnow.Runtime.CIL
             CILTypeInfo constrainedType = null;
 
             // Main execution loop
+            // The outer loop only re-enters after an exception was dispatched to a catch handler in this frame
+            while (true)
+            {
+            try
+            {
             while (pc < pcMax && threadContext.abort == false)
             {
+                // Remember where this instruction starts - exception clauses are matched against this offset
+                instructionStart = pc;
+
                 // Fetch the op code
                 ILOpCode op = FetchOpCode(instructions, ref pc);
 
@@ -1425,6 +1453,73 @@ namespace dotnow.Runtime.CIL
                     #endregion
 
                     #region Convert
+                    case ILOpCode.Conv_ovf_i1:
+                    case ILOpCode.Conv_ovf_i1_un:
+                    case ILOpCode.Conv_ovf_u1:
+                    case ILOpCode.Conv_ovf_u1_un:
+                    case ILOpCode.Conv_ovf_i2:
+                    case ILOpCode.Conv_ovf_i2_un:
+                    case ILOpCode.Conv_ovf_u2:
+                    case ILOpCode.Conv_ovf_u2_un:
+                    case ILOpCode.Conv_ovf_i4:
+                    case ILOpCode.Conv_ovf_i4_un:
+                    case ILOpCode.Conv_ovf_u4:
+                    case ILOpCode.Conv_ovf_u4_un:
+                    case ILOpCode.Conv_ovf_i8:
+                    case ILOpCode.Conv_ovf_i8_un:
+                    case ILOpCode.Conv_ovf_u8:
+                    case ILOpCode.Conv_ovf_u8_un:
+                    case ILOpCode.Conv_ovf_i:
+                    case ILOpCode.Conv_ovf_i_un:
+                    case ILOpCode.Conv_ovf_u:
+                    case ILOpCode.Conv_ovf_u_un:
+                        {
+                            // The '_un' variants interpret the source value as unsigned
+                            bool unsignedSource = op == ILOpCode.Conv_ovf_i1_un || op == ILOpCode.Conv_ovf_u1_un
+                                || op == ILOpCode.Conv_ovf_i2_un || op == ILOpCode.Conv_ovf_u2_un
+                                || op == ILOpCode.Conv_ovf_i4_un || op == ILOpCode.Conv_ovf_u4_un
+                                || op == ILOpCode.Conv_ovf_i8_un || op == ILOpCode.Conv_ovf_u8_un
+                                || op == ILOpCode.Conv_ovf_i_un || op == ILOpCode.Conv_ovf_u_un;
+
+                            try
+                            {
+                                // Widen to decimal, then narrow with range checking (decimal conversions always throw OverflowException on overflow)
+                                decimal value = ToDecimal(stack[sp - 1], unsignedSource);
+
+                                switch (op)
+                                {
+                                    case ILOpCode.Conv_ovf_i1:
+                                    case ILOpCode.Conv_ovf_i1_un: stack[sp - 1].I32 = (sbyte)value; stack[sp - 1].Type = StackType.I32; break;
+                                    case ILOpCode.Conv_ovf_u1:
+                                    case ILOpCode.Conv_ovf_u1_un: stack[sp - 1].I32 = (byte)value; stack[sp - 1].Type = StackType.I32; break;
+                                    case ILOpCode.Conv_ovf_i2:
+                                    case ILOpCode.Conv_ovf_i2_un: stack[sp - 1].I32 = (short)value; stack[sp - 1].Type = StackType.I32; break;
+                                    case ILOpCode.Conv_ovf_u2:
+                                    case ILOpCode.Conv_ovf_u2_un: stack[sp - 1].I32 = (ushort)value; stack[sp - 1].Type = StackType.I32; break;
+                                    case ILOpCode.Conv_ovf_i4:
+                                    case ILOpCode.Conv_ovf_i4_un: stack[sp - 1].I32 = (int)value; stack[sp - 1].Type = StackType.I32; break;
+                                    case ILOpCode.Conv_ovf_u4:
+                                    case ILOpCode.Conv_ovf_u4_un: stack[sp - 1].I32 = (int)(uint)value; stack[sp - 1].Type = StackType.U32; break;
+                                    case ILOpCode.Conv_ovf_i8:
+                                    case ILOpCode.Conv_ovf_i8_un: stack[sp - 1].I64 = (long)value; stack[sp - 1].Type = StackType.I64; break;
+                                    case ILOpCode.Conv_ovf_u8:
+                                    case ILOpCode.Conv_ovf_u8_un: stack[sp - 1].I64 = (long)(ulong)value; stack[sp - 1].Type = StackType.U64; break;
+                                    case ILOpCode.Conv_ovf_i:
+                                    case ILOpCode.Conv_ovf_i_un: stack[sp - 1].Ptr = (IntPtr)(long)value; stack[sp - 1].Type = StackType.Ptr; break;
+                                    case ILOpCode.Conv_ovf_u:
+                                    case ILOpCode.Conv_ovf_u_un: stack[sp - 1].Ptr = (IntPtr)(long)(ulong)value; stack[sp - 1].Type = StackType.UPtr; break;
+                                }
+                            }
+                            catch (OverflowException e)
+                            {
+                                // Throw as runtime exception with interpreted stack trace
+                                threadContext.Throw(e);
+                            }
+
+                            // Debug execution
+                            Debug.Instruction(op, pc - 1, stack[sp - 1]);
+                            break;
+                        }
                     case ILOpCode.Conv_i:
                         {
                             // Check type on stack
@@ -1723,6 +1818,67 @@ namespace dotnow.Runtime.CIL
                     #endregion
 
                     #region Branch
+                    case ILOpCode.Leave:
+                    case ILOpCode.Leave_s:
+                        {
+                            // Fetch offset
+                            int offset = op == ILOpCode.Leave
+                                ? FetchDecode<int>(instructions, ref pc)
+                                : FetchDecode<sbyte>(instructions, ref pc);
+
+                            // Target is relative to the next instruction
+                            int target = pc + offset;
+
+                            // Debug execution
+                            Debug.Instruction(op, instructionStart, offset);
+
+                            // Run the finally handlers of every protected region we are exiting, innermost first.
+                            // Fault handlers only run on exceptional exit, never on leave.
+                            CILExceptionHandlerInfo[] handlers = method.Handlers;
+                            for (int i = 0; i < handlers.Length; i++)
+                            {
+                                CILExceptionHandlerInfo handler = handlers[i];
+
+                                if (handler.HandlerKind != ExceptionHandlerKind.Finally)
+                                    continue;
+
+                                if (handler.IsCaught(instructionStart) == true && handler.IsCaught(target) == false)
+                                    ExecuteHandlerBlock(threadContext, loadContext, method, handler.HandlerOffset, spArg);
+                            }
+
+                            // Leave empties the evaluation stack
+                            sp = spEmpty;
+
+                            // Jump
+                            pc = target;
+                            break;
+                        }
+                    case ILOpCode.Endfinally:   // Also endfault (same opcode)
+                        {
+                            // Debug execution
+                            Debug.Instruction(op, instructionStart);
+
+                            // Handler blocks execute via ExecuteHandlerBlock on this frame - finish that execution
+                            pc = pcMax;
+                            break;
+                        }
+                    case ILOpCode.Rethrow:
+                        {
+                            // Debug execution
+                            Debug.Instruction(op, instructionStart);
+
+                            // Only valid inside a catch handler
+                            if (activeException == null)
+                                threadContext.Throw(new InvalidProgramException("rethrow is only valid inside a catch handler"));
+
+                            // Throw the same exception object again
+                            ExceptionDispatchInfo.Capture(activeException).Throw();
+                            break;
+                        }
+                    case ILOpCode.Endfilter:
+                        {
+                            throw new NotSupportedException("Exception filters (catch ... when) are not supported by the interpreter\nAt method body: " + method.Method);
+                        }
                     case ILOpCode.Br_s:
                         {
                             // Fetch offset
@@ -3653,6 +3809,26 @@ namespace dotnow.Runtime.CIL
                             // Get the stack index where the method arguments were loaded
                             int spArgCaller = sp - ctorMethod.ParameterTypes.Length;
 
+                            // Delegate construction: newobj SomeDelegate::.ctor(object, native int) where the function pointer was pushed by ldftn/ldvirtftn.
+                            // The interpreter represents the function pointer as the resolved CILMethodInfo, so build a real delegate here instead of calling the ctor.
+                            if (ctorMethod.ParameterTypes.Length == 2 && stack[sp - 1].Ref is CILMethodInfo functionPointer && __delegate.IsDelegateType(ctorMethod.DeclaringType.Type) == true)
+                            {
+                                object delegateTarget = stack[sp - 2].Ref;
+
+                                // Create the delegate
+                                Delegate createdDelegate = __delegate.CreateDelegate(ctorMethod.DeclaringType.Type, delegateTarget, functionPointer);
+
+                                // Pop target and function pointer, push the delegate
+                                sp -= 2;
+                                stack[sp].Ref = createdDelegate;
+                                stack[sp].Type = StackType.Ref;
+                                sp++;
+
+                                // Debug execution
+                                Debug.Instruction(op, pc - 5, stack[sp - 1]);
+                                break;
+                            }
+
                             // Check for interop
                             bool interop = (ctorMethod.Flags & CILMethodFlags.Interop) != 0;
 
@@ -3742,7 +3918,8 @@ namespace dotnow.Runtime.CIL
                                     CILTypeInfo virtualType = instanceType.GetTypeInfo(loadContext.AppDomain);
 
                                     // Try to get the virtual method
-                                    virtualType.VTable.GetVirtualInstanceMethod(loadContext, ref callMethod);
+                                    if (virtualType.VTable != null)
+                                        virtualType.VTable.GetVirtualInstanceMethod(loadContext, ref callMethod);
                                 }
 
                                 // Execute the method
@@ -3772,6 +3949,61 @@ namespace dotnow.Runtime.CIL
 
                             // Clear constraint
                             constrainedType = null;
+                            break;
+                        }
+                    case ILOpCode.Ldftn:
+                        {
+                            // Get method token
+                            int token = FetchDecode<int>(instructions, ref pc);
+
+                            // Get handle
+                            EntityHandle fnHandle = MetadataTokens.EntityHandle(token);
+
+                            // Load the method
+                            CILMethodInfo fnMethod = loadContext.GetMethodHandle(fnHandle);
+
+                            // Push the method as the function pointer - consumed by newobj on a delegate type
+                            stack[sp].Ref = fnMethod;
+                            stack[sp].Type = StackType.Ref;
+                            sp++;
+
+                            // Debug execution
+                            Debug.Instruction(op, pc - 5, fnMethod.Method, sp - 1, 0);
+                            break;
+                        }
+                    case ILOpCode.Ldvirtftn:
+                        {
+                            // Get method token
+                            int token = FetchDecode<int>(instructions, ref pc);
+
+                            // Get handle
+                            EntityHandle fnHandle = MetadataTokens.EntityHandle(token);
+
+                            // Load the method
+                            CILMethodInfo fnMethod = loadContext.GetMethodHandle(fnHandle);
+
+                            // Pop the instance
+                            object fnInstance = stack[--sp].Ref;
+
+                            if (fnInstance == null)
+                                threadContext.Throw<NullReferenceException>();
+
+                            // Late-bind interpreted virtual methods on the instance type (interop methods are late-bound by Delegate.CreateDelegate)
+                            if ((fnMethod.Flags & CILMethodFlags.Interpreted) != 0 && (fnMethod.Flags & CILMethodFlags.This) != 0)
+                            {
+                                CILTypeInfo virtualType = fnInstance.GetInterpretedType().GetTypeInfo(loadContext.AppDomain);
+
+                                if (virtualType.VTable != null)
+                                    virtualType.VTable.GetVirtualInstanceMethod(loadContext, ref fnMethod);
+                            }
+
+                            // Push the method as the function pointer
+                            stack[sp].Ref = fnMethod;
+                            stack[sp].Type = StackType.Ref;
+                            sp++;
+
+                            // Debug execution
+                            Debug.Instruction(op, pc - 5, fnMethod.Method, sp - 1, 0);
                             break;
                         }
                     case ILOpCode.Ret:
@@ -3935,6 +4167,27 @@ namespace dotnow.Runtime.CIL
                             Debug.Instruction(op, pc - 5, stack[sp - 1]);
                             break;
                         }
+                    case ILOpCode.Castclass:
+                        {
+                            // Get method token
+                            int token = FetchDecode<int>(instructions, ref pc);
+
+                            // Get handle
+                            EntityHandle typeHandle = MetadataTokens.EntityHandle(token);
+
+                            // Get the type info
+                            CILTypeInfo castType = loadContext.GetTypeHandle(typeHandle);
+
+                            // Check for instance - null passes through unchanged
+                            object castObj = stack[sp - 1].Ref;
+
+                            if (castObj != null && RuntimeType.IsInstanceOfType(castType, castObj) == false)
+                                threadContext.Throw(new InvalidCastException(string.Format("Unable to cast object of type '{0}' to type '{1}'", castObj.GetInterpretedType(), castType.Type)));
+
+                            // Debug execution
+                            Debug.Instruction(op, pc - 5, stack[sp - 1]);
+                            break;
+                        }
                     case ILOpCode.Isinst:
                         {
                             // Get method token
@@ -3962,8 +4215,168 @@ namespace dotnow.Runtime.CIL
                 } // End switch
             } // End loop
 
+            // Completed normally
+            break;
+            }
+            catch (Exception e)
+            {
+                // Interpreted callees that did not return normally never popped their frames - unwind to this frame
+                UnwindCallStack(threadContext, frameDepth);
+
+                // Interop methods are invoked via reflection which wraps the real exception
+                Exception thrown = e;
+                while (thrown is TargetInvocationException && thrown.InnerException != null)
+                    thrown = thrown.InnerException;
+
+                // Try to find a catch handler in this method. This also runs any finally/fault blocks that are exited on the way.
+                if (TryDispatchException(threadContext, loadContext, method, instructionStart, thrown, spArg, spEmpty, ref pc, ref sp) == true)
+                {
+                    // Catch handler will now execute in this frame - it may use rethrow
+                    activeException = thrown;
+                    continue;
+                }
+
+                // Not handled here - propagate to the calling frame (finally blocks have already run)
+                if (ReferenceEquals(thrown, e) == true)
+                    throw;
+
+                // Propagate the unwrapped exception so that outer interpreted handlers can match on its type
+                ExceptionDispatchInfo.Capture(thrown).Throw();
+                throw; // Unreachable
+            }
+            } // End handler loop
+
             return sp - 1; // Return the final stack pointer
         }
+
+        #region ExceptionHandling
+        /// <summary>
+        /// Pop any interpreted call frames above the given depth. Used when an exception unwinds through interpreted frames,
+        /// since the Call/Newobj implementations only pop their frame on normal return.
+        /// </summary>
+        private static void UnwindCallStack(ThreadContext threadContext, int frameDepth)
+        {
+            while (threadContext.callStack.Count > frameDepth)
+                threadContext.PopMethodFrame();
+        }
+
+        /// <summary>
+        /// Find a matching catch clause for an exception raised at <paramref name="faultPc"/> in the given method.
+        /// Runs finally/fault handlers of all protected regions that are exited between the fault point and the catching clause
+        /// (or all enclosing finally/fault handlers when the exception is not caught in this method).
+        /// On success the evaluation stack is reset, the exception object is pushed and <paramref name="pc"/> points at the handler.
+        /// </summary>
+        private static bool TryDispatchException(ThreadContext threadContext, AssemblyLoadContext loadContext, CILMethodInfo method, int faultPc, Exception exception, int spArg, int spEmpty, ref int pc, ref int sp)
+        {
+            CILExceptionHandlerInfo[] handlers = method.Handlers;
+
+            // Nothing to do
+            if (handlers == null || handlers.Length == 0)
+                return false;
+
+            // First pass: find the innermost matching catch clause (clauses are ordered innermost first in metadata)
+            int catchIndex = -1;
+            for (int i = 0; i < handlers.Length; i++)
+            {
+                CILExceptionHandlerInfo handler = handlers[i];
+
+                // Only clauses protecting the faulting instruction
+                if (handler.IsCaught(faultPc) == false)
+                    continue;
+
+                // Filters (catch ... when) are not supported - treat as non-matching
+                if (handler.HandlerKind != ExceptionHandlerKind.Clause)
+                    continue;
+
+                // Untyped catch or matching type
+                if (handler.ExceptionType == null || IsExceptionOfType(loadContext.AppDomain, handler.ExceptionType, exception) == true)
+                {
+                    catchIndex = i;
+                    break;
+                }
+            }
+
+            // Second pass: run finally/fault handlers for protected regions that are being exited.
+            // When caught in this method these are the clauses nested inside the catching clause (lower index).
+            int limit = catchIndex >= 0 ? catchIndex : handlers.Length;
+
+            for (int i = 0; i < limit; i++)
+            {
+                CILExceptionHandlerInfo handler = handlers[i];
+
+                if (handler.IsCaught(faultPc) == false)
+                    continue;
+
+                if (handler.HandlerKind != ExceptionHandlerKind.Finally && handler.HandlerKind != ExceptionHandlerKind.Fault)
+                    continue;
+
+                // Execute the handler block in this frame
+                ExecuteHandlerBlock(threadContext, loadContext, method, handler.HandlerOffset, spArg);
+            }
+
+            // Not caught here
+            if (catchIndex < 0)
+                return false;
+
+            // Enter the catch handler: empty evaluation stack with the exception object on top
+            sp = spEmpty;
+            threadContext.stack[sp].Ref = exception;
+            threadContext.stack[sp].Type = StackType.Ref;
+            sp++;
+
+            pc = handlers[catchIndex].HandlerOffset;
+            return true;
+        }
+
+        /// <summary>
+        /// Execute a finally or fault handler block of the current frame. Execution runs until 'endfinally' is reached.
+        /// Locals are shared with the frame; the evaluation stack starts empty.
+        /// </summary>
+        private static void ExecuteHandlerBlock(ThreadContext threadContext, AssemblyLoadContext loadContext, CILMethodInfo method, int handlerOffset, int spArg)
+        {
+            int handlerPc = handlerOffset;
+            ExecuteMethodBytecode(threadContext, loadContext, method, ref handlerPc, spArg, false);
+        }
+
+        /// <summary>
+        /// Check whether the exception matches the catch type of a clause.
+        /// </summary>
+        private static bool IsExceptionOfType(AppDomain appDomain, Type catchType, Exception exception)
+        {
+            // Catch-all
+            if (catchType == typeof(object) || catchType == typeof(Exception))
+                return true;
+
+            // Interop exception types can be compared directly
+            if (catchType.IsCLRType() == false)
+                return catchType.IsInstanceOfType(exception);
+
+            // Interpreted exception type - compare via interpreted type info
+            CILTypeInfo catchTypeInfo = catchType.GetTypeInfo(appDomain);
+            return RuntimeType.IsInstanceOfType(catchTypeInfo, exception);
+        }
+
+        /// <summary>
+        /// Interpret the value on the stack as a decimal for overflow-checked conversions.
+        /// Decimal spans the full long/ulong range and truncates toward zero on integral conversion, matching conv.ovf semantics.
+        /// </summary>
+        private static decimal ToDecimal(in StackData data, bool unsignedSource)
+        {
+            switch (data.Type)
+            {
+                default: throw new NotSupportedException(data.Type.ToString());
+
+                case StackType.I32: return unsignedSource ? (decimal)(uint)data.I32 : (decimal)data.I32;
+                case StackType.U32: return (decimal)(uint)data.I32;
+                case StackType.I64: return unsignedSource ? (decimal)(ulong)data.I64 : (decimal)data.I64;
+                case StackType.U64: return (decimal)(ulong)data.I64;
+                case StackType.F32: return (decimal)data.F32;
+                case StackType.F64: return (decimal)data.F64;
+                case StackType.Ptr: return unsignedSource ? (decimal)(ulong)(long)data.Ptr : (decimal)(long)data.Ptr;
+                case StackType.UPtr: return (decimal)(ulong)(long)data.Ptr;
+            }
+        }
+        #endregion
 
         [MethodImpl(MethodImplOptions.AggressiveInlining)]
         internal static ILOpCode FetchOpCode(byte[] instructions, ref int pc)
