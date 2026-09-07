@@ -522,6 +522,61 @@ namespace dotnow
                         }
                         break;
                     }
+                case HandleKind.TypeReference:
+                    {
+                        // Nested type: the resolution scope is the enclosing type (itself a TypeReference, possibly nested again).
+                        // Example: System.Collections.Generic.List`1/Enumerator, used by every foreach over a List<T>.
+                        Type enclosingType = metadataReferenceProvider.ResolveMetadataType(typeReference.ResolutionScope);
+
+                        // Nested type names are stored without namespace
+                        Type resolvedType = enclosingType.GetNestedType(typeName, BindingFlags.Public | BindingFlags.NonPublic);
+
+                        // Check for found
+                        if (resolvedType == null)
+                            throw new TypeLoadException(string.Concat(enclosingType.FullName, "+", typeName));
+
+                        // Check for interpreted (nested type declared in another interpreted assembly)
+                        AssemblyLoadContext referenceContext = resolvedType.GetLoadContext();
+
+                        if (referenceContext != null)
+                        {
+                            // Get the token
+                            EntityHandle handle = MetadataTokens.EntityHandle(resolvedType.MetadataToken);
+
+                            // Get the row
+                            int definitionRow = MetadataTokens.GetRowNumber(handle);
+
+                            // Resolve type handle
+                            if (referenceContext.typeDefinitions[definitionRow].Type == null)
+                            {
+                                // Get the type info
+                                CILTypeInfo typeInfo = new CILTypeInfo(appDomain, resolvedType);
+
+                                // Initialize the type handle
+                                referenceContext.typeDefinitions[definitionRow] = typeInfo;
+
+                                // Run static constructor
+                                typeInfo.StaticInitialize();
+                            }
+
+                            // Resolve the type handle
+                            @ref = new CILMetadataReference(
+                                referenceContext,
+                                definitionRow);
+                        }
+                        // Must be an interop type
+                        else
+                        {
+                            // Ensure that the interop type handle is resolved
+                            int hash = appDomain.ResolveInteropTypeHandle(resolvedType);
+
+                            // Resolve the type
+                            @ref = new CILMetadataReference(
+                                null,                       // Null context because the type is an interop type
+                                hash);                      // use hash code as key for interop types
+                        }
+                        break;
+                    }
                 default:
                     throw new NotSupportedException(typeReference.ResolutionScope.Kind.ToString());
             }

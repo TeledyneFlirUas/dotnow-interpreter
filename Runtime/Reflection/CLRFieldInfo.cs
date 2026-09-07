@@ -127,6 +127,9 @@ namespace dotnow.Reflection
 
         public override void SetValue(object obj, object value, BindingFlags invokeAttr, Binder binder, CultureInfo culture)
         {
+            // Ensure the field is resolved (GetValue does this; SetValue was missing it)
+            metadataProvider.AssemblyLoadContext.ResolveField(handle);
+            
             // Get execution context
             ThreadContext threadContext = metadataProvider.AppDomain.GetThreadContext();
 
