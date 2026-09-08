@@ -1,7 +1,7 @@
 {
   "name": "com.teledyne.dotnow",
   "displayName": "Teledyne Dotnow Interpreter",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "unity": "2022.3",
   "license": "MIT",
   "description": "A pure C# CIL interpreter designed to load and execute managed code on IL2CPP (Unity) platforms.\n Updated by Teledyne FLIR UAS to support more C# code patterns",

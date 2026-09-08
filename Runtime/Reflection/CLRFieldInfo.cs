@@ -165,8 +165,22 @@ namespace dotnow.Reflection
 
         private Type InitFieldType()
         {
-            // Decode signature which maps to field type
-            return definition.DecodeSignature(metadataProvider, null);
+            try
+            {
+                // Decode signature which maps to field type
+                return definition.DecodeSignature(metadataProvider, null);
+            }
+            catch (Exception e)
+            {
+                // Name the field so the failure is actionable. The common case is a generic instantiated with an interpreted type
+                // (e.g. List<SomeScriptClass>): on AOT platforms MakeGenericType throws PlatformNotSupportedException for such arguments,
+                // and without this wrapper the log shows only the signature decoder, not which field or type caused it.
+                throw new TypeLoadException(string.Format(
+                    "Could not resolve the type of field '{0}.{1}'. If the field type is a generic instantiated with a type defined in interpreted code (e.g. List<T> where T is a script class), move T to a compiled assembly. Inner error: {2}",
+                    declaringType != null ? declaringType.FullName : "<unknown>",
+                    Name,
+                    e.Message), e);
+            }
         }
 
         private TypeCode InitFieldTypeCode()
